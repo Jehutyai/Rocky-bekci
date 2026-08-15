@@ -1,17 +1,12 @@
 name: roborock-giris
 
 on:
-  workflow_dispatch:
-    inputs:
-      kod:
-        description: "E-postana gelen kod (ILK calistirmada BOS birak)"
-        required: false
-        default: ""
+  workflow_dispatch: {}
 
 jobs:
   giris:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -22,4 +17,3 @@ jobs:
       - run: python login.py
         env:
           RR_EMAIL: ${{ secrets.RR_EMAIL }}
-          RR_CODE: ${{ github.event.inputs.kod }}
