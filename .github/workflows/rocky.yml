@@ -5,6 +5,9 @@ on:
     - cron: "3,13,23,33,43,53 * * * *"
   workflow_dispatch: {}
 
+permissions:
+  contents: write
+
 concurrency:
   group: rocky
   cancel-in-progress: false
@@ -26,3 +29,4 @@ jobs:
           RR_USER_DATA: ${{ secrets.RR_USER_DATA }}
           BATTERY_THRESHOLD: "40"
           RESUME_THRESHOLD: "100"
+          RESUME_REPEAT: "2"
