@@ -23,6 +23,6 @@ jobs:
       - run: python monitor.py
         env:
           RR_EMAIL: ${{ secrets.RR_EMAIL }}
-          RR_PASSWORD: ${{ secrets.RR_PASSWORD }}
+          RR_USER_DATA: ${{ secrets.RR_USER_DATA }}
           BATTERY_THRESHOLD: "40"
           RESUME_THRESHOLD: "100"
