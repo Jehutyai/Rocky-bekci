@@ -1,0 +1,28 @@
+name: rocky-bekci
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: rocky
+  cancel-in-progress: false
+
+jobs:
+  kontrol:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python monitor.py
+        env:
+          RR_EMAIL: ${{ secrets.RR_EMAIL }}
+          RR_PASSWORD: ${{ secrets.RR_PASSWORD }}
+          BATTERY_THRESHOLD: "40"
+          RESUME_THRESHOLD: "100"
