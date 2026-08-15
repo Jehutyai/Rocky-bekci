@@ -24,5 +24,5 @@ jobs:
         env:
           RR_EMAIL: ${{ secrets.RR_EMAIL }}
           RR_USER_DATA: ${{ secrets.RR_USER_DATA }}
-          BATTERY_THRESHOLD: "40"
+          BATTERY_THRESHOLD: "97"
           RESUME_THRESHOLD: "100"
