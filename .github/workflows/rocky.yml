@@ -30,4 +30,5 @@ jobs:
           BATTERY_THRESHOLD: "45"
           RESUME_THRESHOLD: "100"
           RESUME_REPEAT: "2"
-          COVERAGE_THRESHOLD: "45"
+          COVERAGE_THRESHOLD: "60"
+          POINT_THRESHOLD: "100"
