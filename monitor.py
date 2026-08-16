@@ -1,5 +1,5 @@
-"""Rocky Bekci v5.1: %45'te kes+eve yolla, donusu IZLE — %30'da hala dockta degilse
-robotu durdur ve telefona acil alarm gonder. Kumanda modunda asla karisma."""
+"""Rocky Bekci v5.2: %45'te kes+kaydet+eve yolla, %100'de devam; ayni odada ust uste
+takilirsa tur sayisini dusur (x2->x1), 4. takilista guvenli dur + acil bildirim."""
 import asyncio
 import json
 import os
@@ -21,6 +21,7 @@ RESUME_AT = int(os.environ.get("RESUME_THRESHOLD", "100"))
 REPEAT = int(os.environ.get("RESUME_REPEAT", "2"))
 DOLULUK_ESIK = int(os.environ.get("COVERAGE_THRESHOLD", "60"))
 NOKTA_TABANI = int(os.environ.get("POINT_THRESHOLD", "100"))
+MAKS_TAKILMA = int(os.environ.get("MAX_STUCK_LEGS", "4"))
 FLAG = "kalan-gorev.json"
 
 ACTIVE_STATES = {5, 10, 11, 16, 17, 18}
@@ -103,7 +104,7 @@ def parse_remaining(raw_map, candidates=None):
     rooms = map_data.rooms or {}
     if not rooms:
         print("haritada oda bulunamadi")
-        return None
+        return None, None
     points = []
     path = getattr(map_data, "path", None)
     if path is not None and getattr(path, "path", None):
@@ -111,7 +112,7 @@ def parse_remaining(raw_map, candidates=None):
             points.extend(parca)
     if len(points) < 10:
         print("haritada yol verisi yok/az")
-        return None
+        return None, None
 
     kutular = {}
     for sid, r in rooms.items():
@@ -123,7 +124,7 @@ def parse_remaining(raw_map, candidates=None):
             continue
     if not kutular:
         print("oda kutulari okunamadi")
-        return None
+        return None, None
 
     def oda_bul(pt):
         adaylar = []
@@ -169,7 +170,7 @@ def parse_remaining(raw_map, candidates=None):
         havuz = tum
     kalan = [s for s in havuz if s not in biten]
     print(f"oda analizi -> biten: {sorted(biten)} | son/yarim: {son_oda} | kalan: {kalan}")
-    return kalan
+    return kalan, son_oda
 
 
 async def release(client):
@@ -207,13 +208,14 @@ async def restore_settings(user_data, device, model, ayar):
 
 async def start_remaining(user_data, device, model, flag):
     kalan = [int(s) for s in flag.get("kalan") or []]
+    tur = int(flag.get("tur") or REPEAT)
     await restore_settings(user_data, device, model, flag.get("ayar") or {})
     await send(
         user_data, device, model,
         RoborockCommand.APP_SEGMENT_CLEAN,
-        [{"segments": kalan, "repeat": REPEAT}],
+        [{"segments": kalan, "repeat": tur}],
     )
-    print(f"kalan odalar baslatildi: {kalan} (x{REPEAT})")
+    print(f"kalan odalar baslatildi: {kalan} (x{tur})")
 
 
 async def fetch_map(user_data, device, model):
@@ -231,7 +233,7 @@ async def analyze(user_data, device, model, candidates):
             return parse_remaining(raw, candidates)
     except Exception as e:
         print(f"harita okunamadi: {e}")
-    return None
+    return None, None
 
 
 async def check_device(user_data, device, model):
@@ -279,7 +281,7 @@ async def check_device(user_data, device, model):
         await send(user_data, device, model, RoborockCommand.APP_PAUSE)
         ntfy(
             f"DONEMEDI! Pil %{battery}, robotu oldugu yerde DURDURDUM. "
-            f"Uygulamadan baglan: once Back to Dock dene, olmazsa uzaktan kumandayla dock'a sur. "
+            f"Uygulamadan baglan: once Back to Dock dene, olmazsa kumandayla dock'a sur. "
             f"Dock'a oturunca kalanlari %100'de ben devam ettirecegim.",
             urgent=True,
         )
@@ -287,27 +289,54 @@ async def check_device(user_data, device, model):
         print("Esik altinda: analiz + eve gonderme")
         ayar = flag.get("ayar") or snapshot_settings(status)
         candidates = flag.get("kalan")
-        kalan = await analyze(user_data, device, model, candidates)
+        kalan, son_oda = await analyze(user_data, device, model, candidates)
         if kalan is None and candidates:
             kalan = [int(c) for c in candidates]
             print(f"harita cozulmedi, onceki liste korunuyor: {kalan}")
+
+        onceki_problem = flag.get("problem")
+        sayac = int(flag.get("sayac") or 0)
+        if son_oda is not None and son_oda == onceki_problem:
+            sayac += 1
+        elif son_oda is not None:
+            onceki_problem = son_oda
+            sayac = 1
+
+        tur = REPEAT
+        if sayac >= 2:
+            tur = 1
+            print(f"oda {onceki_problem} ust uste {sayac}. kez yarim: tur sayisi 1'e dusuruldu")
+
         await send(user_data, device, model, RoborockCommand.APP_PAUSE)
         await asyncio.sleep(3)
         await send(user_data, device, model, RoborockCommand.APP_CHARGE)
+
+        if sayac >= MAKS_TAKILMA:
+            clear_flag("bekci: ayni oda tek sarja sigmiyor, otomatik devam durduruldu")
+            ntfy(
+                f"Oda {onceki_problem} ust uste {sayac} kez tek sarja sigmadi (x1'de bile). "
+                f"Donguyu kestim, robot dockta guvende, otomatik devam KAPALI. "
+                f"Pil zayif olabilir ya da robot o odada donup duruyor — elle kontrol et.",
+                urgent=True,
+            )
+            return
+
         save_flag(
-            {"beklemede": True, "kalan": kalan, "ayar": ayar, "t": simdi},
+            {
+                "beklemede": True, "kalan": kalan, "ayar": ayar,
+                "problem": onceki_problem, "sayac": sayac, "tur": tur, "t": simdi,
+            },
             "bekci: gorev kesildi",
         )
-        ntfy(f"Pil %{battery}: gorevi kestim, eve yolladim. Kalan odalar: {kalan}. Donusu izliyorum.")
+        ek = f" (dikkat: {sayac}. takilma, devam x{tur} olacak)" if sayac >= 2 else ""
+        ntfy(f"Pil %{battery}: gorevi kestim, eve yolladim. Kalan odalar: {kalan}.{ek}")
     elif flag.get("beklemede") and state in CHARGING_STATES and battery >= RESUME_AT:
         if flag.get("kalan"):
-            yeni = {
-                "devam": True, "kalan": flag["kalan"], "ayar": flag.get("ayar"),
-                "basladi": False, "deneme": 1, "t": simdi,
-            }
+            yeni = dict(flag)
+            yeni.update({"beklemede": False, "devam": True, "basladi": False, "deneme": 1, "t": simdi})
             await start_remaining(user_data, device, model, yeni)
             save_flag(yeni, "bekci: kalan odalar baslatildi")
-            ntfy(f"Sarj %100: kalan odalara devam ediyor: {yeni['kalan']}")
+            ntfy(f"Sarj %100: kalan odalara devam ediyor: {yeni['kalan']} (x{yeni.get('tur') or REPEAT})")
         else:
             print("Kalan oda listesi yok; robot dockta guvende, kayit kapatiliyor.")
             clear_flag("bekci: kalan belirlenemedi")
@@ -321,7 +350,7 @@ async def check_device(user_data, device, model):
     ):
         if int(flag.get("deneme", 1)) < 3:
             print("Devam teyit edilemedi: kor tekrar yerine harita analiz ediliyor")
-            kalan = await analyze(user_data, device, model, flag.get("kalan"))
+            kalan, _ = await analyze(user_data, device, model, flag.get("kalan"))
             if kalan == []:
                 print("Analiz: her sey bitmis, kayit kapatiliyor")
                 clear_flag("bekci: is tamamlandi (analizle dogrulandi)")
