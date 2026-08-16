@@ -27,7 +27,9 @@ jobs:
         env:
           RR_EMAIL: ${{ secrets.RR_EMAIL }}
           RR_USER_DATA: ${{ secrets.RR_USER_DATA }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           BATTERY_THRESHOLD: "45"
+          RESCUE_THRESHOLD: "30"
           RESUME_THRESHOLD: "100"
           RESUME_REPEAT: "2"
           COVERAGE_THRESHOLD: "60"
