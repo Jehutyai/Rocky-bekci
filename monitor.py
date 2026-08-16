@@ -1,11 +1,12 @@
-"""Rocky Bekci v4.6: gorevi izler, esikte KAPSAMA analiziyle kalan odalari + ayarlari
-kaydeder, robotu sarja yollar, %100'de ayni ayarlarla kalanlardan devam eder."""
+"""Rocky Bekci v5.1: %45'te kes+eve yolla, donusu IZLE — %30'da hala dockta degilse
+robotu durdur ve telefona acil alarm gonder. Kumanda modunda asla karisma."""
 import asyncio
 import json
 import os
 import subprocess
 import time
 
+import requests
 from roborock import RoborockCommand
 from roborock.containers import DeviceData, UserData
 from roborock.version_1_apis.roborock_mqtt_client_v1 import RoborockMqttClientV1
@@ -13,16 +14,37 @@ from roborock.web_api import RoborockApiClient
 
 EMAIL = os.environ["RR_EMAIL"]
 USER_DATA_JSON = os.environ.get("RR_USER_DATA", "").strip()
+NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "").strip()
 THRESHOLD = int(os.environ.get("BATTERY_THRESHOLD", "45"))
+RESCUE_AT = int(os.environ.get("RESCUE_THRESHOLD", "30"))
 RESUME_AT = int(os.environ.get("RESUME_THRESHOLD", "100"))
 REPEAT = int(os.environ.get("RESUME_REPEAT", "2"))
 DOLULUK_ESIK = int(os.environ.get("COVERAGE_THRESHOLD", "60"))
 NOKTA_TABANI = int(os.environ.get("POINT_THRESHOLD", "100"))
 FLAG = "kalan-gorev.json"
 
-ACTIVE_STATES = {4, 5, 7, 10, 11, 16, 17, 18}
+ACTIVE_STATES = {5, 10, 11, 16, 17, 18}
+USER_DRIVE_STATES = {4, 7}
 RETURNING_STATES = {6, 15}
 CHARGING_STATES = {8, 100}
+
+
+def ntfy(msg: str, urgent: bool = False) -> None:
+    if not NTFY_TOPIC:
+        return
+    try:
+        requests.post(
+            f"https://ntfy.sh/{NTFY_TOPIC}",
+            data=msg.encode("utf-8"),
+            headers={
+                "Title": "Rocky Bekci",
+                "Priority": "urgent" if urgent else "default",
+                "Tags": "rotating_light" if urgent else "robot",
+            },
+            timeout=10,
+        )
+    except Exception as e:
+        print(f"ntfy gonderilemedi: {e}")
 
 
 def git(*args):
@@ -218,6 +240,7 @@ async def check_device(user_data, device, model):
         status = await client.get_status()
     except Exception as e:
         print(f"{device.name}: duruma ulasilamadi ({e})")
+        ntfy(f"{device.name} cevap vermiyor! Kapanmis/ortada kalmis olabilir, kontrol et.", urgent=True)
         return
     finally:
         await release(client)
@@ -240,7 +263,27 @@ async def check_device(user_data, device, model):
     if battery is None or state is None:
         return
 
-    if battery <= THRESHOLD and state in ACTIVE_STATES:
+    if error != 0:
+        ntfy(f"{device.name} HATA verdi (kod {error}), pil %{battery}. Uygulamadan bak!", urgent=True)
+
+    if state in USER_DRIVE_STATES:
+        print("Kullanici kumandada/manuel modda: karisilmiyor")
+        return
+
+    if (
+        flag.get("beklemede")
+        and battery <= RESCUE_AT
+        and state not in CHARGING_STATES
+    ):
+        print(f"KURTARMA: eve yollandi ama pil %{battery} ve hala dockta degil -> durduruluyor")
+        await send(user_data, device, model, RoborockCommand.APP_PAUSE)
+        ntfy(
+            f"DONEMEDI! Pil %{battery}, robotu oldugu yerde DURDURDUM. "
+            f"Uygulamadan baglan: once Back to Dock dene, olmazsa uzaktan kumandayla dock'a sur. "
+            f"Dock'a oturunca kalanlari %100'de ben devam ettirecegim.",
+            urgent=True,
+        )
+    elif battery <= THRESHOLD and state in ACTIVE_STATES:
         print("Esik altinda: analiz + eve gonderme")
         ayar = flag.get("ayar") or snapshot_settings(status)
         candidates = flag.get("kalan")
@@ -255,6 +298,7 @@ async def check_device(user_data, device, model):
             {"beklemede": True, "kalan": kalan, "ayar": ayar, "t": simdi},
             "bekci: gorev kesildi",
         )
+        ntfy(f"Pil %{battery}: gorevi kestim, eve yolladim. Kalan odalar: {kalan}. Donusu izliyorum.")
     elif flag.get("beklemede") and state in CHARGING_STATES and battery >= RESUME_AT:
         if flag.get("kalan"):
             yeni = {
@@ -263,6 +307,7 @@ async def check_device(user_data, device, model):
             }
             await start_remaining(user_data, device, model, yeni)
             save_flag(yeni, "bekci: kalan odalar baslatildi")
+            ntfy(f"Sarj %100: kalan odalara devam ediyor: {yeni['kalan']}")
         else:
             print("Kalan oda listesi yok; robot dockta guvende, kayit kapatiliyor.")
             clear_flag("bekci: kalan belirlenemedi")
@@ -280,6 +325,7 @@ async def check_device(user_data, device, model):
             if kalan == []:
                 print("Analiz: her sey bitmis, kayit kapatiliyor")
                 clear_flag("bekci: is tamamlandi (analizle dogrulandi)")
+                ntfy("Temizlik tamamlandi, ev bitti.")
             else:
                 if kalan:
                     flag["kalan"] = kalan
@@ -290,6 +336,7 @@ async def check_device(user_data, device, model):
         else:
             print("Devam 3 kez tutmadi; robot dockta guvende, kayit kapatiliyor.")
             clear_flag("bekci: devam ettirilemedi")
+            ntfy("Kalan odalar baslatilamadi (3 deneme). Robot dockta guvende; elle baslatabilirsin.", urgent=True)
     elif (
         flag.get("devam") and flag.get("basladi")
         and state in CHARGING_STATES and in_cleaning == 0
@@ -297,11 +344,12 @@ async def check_device(user_data, device, model):
     ):
         print("Devam etabi kesintisiz bitti: ev tamam, kayit kapatiliyor")
         clear_flag("bekci: is tamamlandi")
+        ntfy("Temizlik tamamlandi, ev bitti.")
     elif flag.get("beklemede") and state in ACTIVE_STATES and battery > THRESHOLD:
         print("Kullanici yeni gorev baslatmis, eski kayit iptal")
         clear_flag("bekci: kullanici devraldi")
     elif battery <= 25 and state in RETURNING_STATES:
-        print(f"DIKKAT: donuyor ama pil %{battery}")
+        ntfy(f"Robot %{battery} pille dock'a donmeye calisiyor, varamayabilir. Goz at!", urgent=True)
 
 
 async def main():
