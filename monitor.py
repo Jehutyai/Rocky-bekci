@@ -1,5 +1,6 @@
-"""Rocky Bekci v4.2: gorevi izler, %40'ta kalan odalari + ayarlarini kaydeder,
-robotu sarja yollar, %100'de ayni ayarlar ve tur sayisiyla kalanlardan devam eder."""
+"""Rocky Bekci v4.5: gorevi izler, esikte KAPSAMA analiziyle kalan odalari + ayarlari
+kaydeder, robotu sarja yollar, %100'de ayni ayarlarla kalanlardan devam eder.
+Tekrar denemelerde kor komut yerine harita yeniden analiz edilir."""
 import asyncio
 import json
 import os
@@ -13,9 +14,10 @@ from roborock.web_api import RoborockApiClient
 
 EMAIL = os.environ["RR_EMAIL"]
 USER_DATA_JSON = os.environ.get("RR_USER_DATA", "").strip()
-THRESHOLD = int(os.environ.get("BATTERY_THRESHOLD", "40"))
+THRESHOLD = int(os.environ.get("BATTERY_THRESHOLD", "45"))
 RESUME_AT = int(os.environ.get("RESUME_THRESHOLD", "100"))
 REPEAT = int(os.environ.get("RESUME_REPEAT", "2"))
+DOLULUK_ESIK = int(os.environ.get("COVERAGE_THRESHOLD", "45"))
 FLAG = "kalan-gorev.json"
 
 ACTIVE_STATES = {4, 5, 7, 10, 11, 16, 17, 18}
@@ -89,31 +91,59 @@ def parse_remaining(raw_map, candidates=None):
         print("haritada yol verisi yok/az")
         return None
 
+    kutular = {}
+    for sid, r in rooms.items():
+        try:
+            x0, x1 = sorted((r.x0, r.x1))
+            y0, y1 = sorted((r.y0, r.y1))
+            kutular[int(sid)] = (x0, y0, x1, y1)
+        except Exception:
+            continue
+    if not kutular:
+        print("oda kutulari okunamadi")
+        return None
+
     def oda_bul(pt):
         adaylar = []
-        for sid, r in rooms.items():
-            try:
-                if r.x0 <= pt.x <= r.x1 and r.y0 <= pt.y <= r.y1:
-                    adaylar.append((abs((r.x1 - r.x0) * (r.y1 - r.y0)), sid))
-            except Exception:
-                continue
+        for sid, (x0, y0, x1, y1) in kutular.items():
+            if x0 <= pt.x <= x1 and y0 <= pt.y <= y1:
+                adaylar.append(((x1 - x0) * (y1 - y0), sid))
         return min(adaylar)[1] if adaylar else None
 
-    sayim = {sid: 0 for sid in rooms}
+    oda_noktalari = {sid: [] for sid in kutular}
     sira = []
     for pt in points:
         sid = oda_bul(pt)
         if sid is not None:
-            sayim[sid] += 1
+            oda_noktalari[sid].append(pt)
             if not sira or sira[-1] != sid:
                 sira.append(sid)
     son_oda = sira[-1] if sira else None
-    biten = {int(s) for s, c in sayim.items() if c >= 25 and s != son_oda}
-    tum = [int(s) for s in rooms]
+
+    biten = set()
+    for sid, pts in oda_noktalari.items():
+        if not pts:
+            print(f"oda {sid}: 0 nokta, doluluk %0 -> girilmemis")
+            continue
+        x0, y0, x1, y1 = kutular[sid]
+        w = max(x1 - x0, 1)
+        h = max(y1 - y0, 1)
+        hucreler = set()
+        for p in pts:
+            gx = min(9, max(0, int((p.x - x0) * 10 / w)))
+            gy = min(9, max(0, int((p.y - y0) * 10 / h)))
+            hucreler.add((gx, gy))
+        doluluk = len(hucreler)
+        temiz = len(pts) >= 40 and doluluk >= DOLULUK_ESIK and sid != son_oda
+        etiket = "BITTI" if temiz else ("son/yarim" if sid == son_oda else "gezinti")
+        print(f"oda {sid}: {len(pts)} nokta, doluluk %{doluluk} -> {etiket}")
+        if temiz:
+            biten.add(sid)
+
+    tum = list(kutular.keys())
     havuz = [int(c) for c in candidates] if candidates else tum
-    gezilen = {int(s) for s, c in sayim.items() if c >= 25}
-    if candidates and any(g not in {int(c) for c in candidates} for g in gezilen):
-        print("eski liste disinda odalar gezilmis: yeni gorev sayiliyor, havuz sifirlandi")
+    if candidates and any(b not in {int(c) for c in candidates} for b in biten):
+        print("eski liste disinda oda taranmis: yeni gorev sayiliyor, havuz sifirlandi")
         havuz = tum
     kalan = [s for s in havuz if s not in biten]
     print(f"oda analizi -> biten: {sorted(biten)} | son/yarim: {son_oda} | kalan: {kalan}")
@@ -172,6 +202,16 @@ async def fetch_map(user_data, device, model):
         await release(client)
 
 
+async def analyze(user_data, device, model, candidates):
+    try:
+        raw = await fetch_map(user_data, device, model)
+        if raw:
+            return parse_remaining(raw, candidates)
+    except Exception as e:
+        print(f"harita okunamadi: {e}")
+    return None
+
+
 async def check_device(user_data, device, model):
     client = RoborockMqttClientV1(user_data, DeviceData(device, model))
     try:
@@ -204,13 +244,7 @@ async def check_device(user_data, device, model):
         print("Esik altinda: analiz + eve gonderme")
         ayar = flag.get("ayar") or snapshot_settings(status)
         candidates = flag.get("kalan")
-        kalan = None
-        try:
-            raw = await fetch_map(user_data, device, model)
-            if raw:
-                kalan = parse_remaining(raw, candidates)
-        except Exception as e:
-            print(f"harita okunamadi: {e}")
+        kalan = await analyze(user_data, device, model, candidates)
         if kalan is None and candidates:
             kalan = [int(c) for c in candidates]
             print(f"harita cozulmedi, onceki liste korunuyor: {kalan}")
@@ -241,11 +275,18 @@ async def check_device(user_data, device, model):
         and simdi - int(flag.get("t", 0)) > 600
     ):
         if int(flag.get("deneme", 1)) < 3:
-            print("Devam baslamamis gorunuyor, tekrar deneniyor")
-            flag["deneme"] = int(flag.get("deneme", 1)) + 1
-            flag["t"] = simdi
-            await start_remaining(user_data, device, model, flag)
-            save_flag(flag, "bekci: devam tekrar denendi")
+            print("Devam teyit edilemedi: kor tekrar yerine harita analiz ediliyor")
+            kalan = await analyze(user_data, device, model, flag.get("kalan"))
+            if kalan == []:
+                print("Analiz: her sey bitmis, kayit kapatiliyor")
+                clear_flag("bekci: is tamamlandi (analizle dogrulandi)")
+            else:
+                if kalan:
+                    flag["kalan"] = kalan
+                flag["deneme"] = int(flag.get("deneme", 1)) + 1
+                flag["t"] = simdi
+                await start_remaining(user_data, device, model, flag)
+                save_flag(flag, "bekci: devam tekrar denendi")
         else:
             print("Devam 3 kez tutmadi; robot dockta guvende, kayit kapatiliyor.")
             clear_flag("bekci: devam ettirilemedi")
