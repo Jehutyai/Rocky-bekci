@@ -1,6 +1,5 @@
-"""Rocky Bekci v4.5: gorevi izler, esikte KAPSAMA analiziyle kalan odalari + ayarlari
-kaydeder, robotu sarja yollar, %100'de ayni ayarlarla kalanlardan devam eder.
-Tekrar denemelerde kor komut yerine harita yeniden analiz edilir."""
+"""Rocky Bekci v4.6: gorevi izler, esikte KAPSAMA analiziyle kalan odalari + ayarlari
+kaydeder, robotu sarja yollar, %100'de ayni ayarlarla kalanlardan devam eder."""
 import asyncio
 import json
 import os
@@ -17,7 +16,8 @@ USER_DATA_JSON = os.environ.get("RR_USER_DATA", "").strip()
 THRESHOLD = int(os.environ.get("BATTERY_THRESHOLD", "45"))
 RESUME_AT = int(os.environ.get("RESUME_THRESHOLD", "100"))
 REPEAT = int(os.environ.get("RESUME_REPEAT", "2"))
-DOLULUK_ESIK = int(os.environ.get("COVERAGE_THRESHOLD", "45"))
+DOLULUK_ESIK = int(os.environ.get("COVERAGE_THRESHOLD", "60"))
+NOKTA_TABANI = int(os.environ.get("POINT_THRESHOLD", "100"))
 FLAG = "kalan-gorev.json"
 
 ACTIVE_STATES = {4, 5, 7, 10, 11, 16, 17, 18}
@@ -134,7 +134,7 @@ def parse_remaining(raw_map, candidates=None):
             gy = min(9, max(0, int((p.y - y0) * 10 / h)))
             hucreler.add((gx, gy))
         doluluk = len(hucreler)
-        temiz = len(pts) >= 40 and doluluk >= DOLULUK_ESIK and sid != son_oda
+        temiz = len(pts) >= NOKTA_TABANI and doluluk >= DOLULUK_ESIK and sid != son_oda
         etiket = "BITTI" if temiz else ("son/yarim" if sid == son_oda else "gezinti")
         print(f"oda {sid}: {len(pts)} nokta, doluluk %{doluluk} -> {etiket}")
         if temiz:
